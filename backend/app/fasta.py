@@ -50,6 +50,19 @@ def sanitize_token(token: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", (token or "").strip().lower()).strip("_")
 
 
+def first_value(value: str | None) -> str:
+    """Gene and protein fields can hold several ';'-separated entries (with leading
+    or empty segments). A FASTA header may name only one, so use the first
+    non-empty entry. Note: ',' and '/' occur *within* a single name and are kept."""
+    if not value:
+        return ""
+    for part in value.split(";"):
+        part = part.strip()
+        if part:
+            return part
+    return ""
+
+
 def _resolve_species(species_raw: str) -> tuple[str, str]:
     """Return (OS name, OX taxid). Uses the first species if combined; unknown
     species keep their name with a blank taxid."""
@@ -61,7 +74,7 @@ def _resolve_species(species_raw: str) -> tuple[str, str]:
 
 def _fields(saap: SAAP, species: str, token: str, seq_no: int) -> dict:
     accession = saap.source_accession or f"SAAP{seq_no}"
-    gene = saap.source_gene or "-"
+    gene = first_value(saap.source_gene) or "-"
     os_name, ox = _resolve_species(species)
     mid = f"MTP{seq_no}"
     return {
@@ -77,7 +90,7 @@ def _fields(saap: SAAP, species: str, token: str, seq_no: int) -> dict:
         "aa_sub": saap.aa_sub or "?",
         "bp_seq": saap.bp_seq or "-",
         "mtp_seq": saap.mtp_seq,
-        "protein": saap.ref_proteins or "",
+        "protein": first_value(saap.ref_proteins),
     }
 
 
