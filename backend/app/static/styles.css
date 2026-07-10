@@ -52,6 +52,10 @@
   --mini-bg: #dbe8e2; --mini-fg: #35726b; --mini-border: #a6c2b8; --mini-b: #4f7392;
   --warn-fg: #8a6a2f; --warn-bg: #f0ead6; --warn-border: #cdb984;
 
+  /* logo — punchier than the UI palette, still adapts per theme */
+  --logo-large: #2f7d74; --logo-small: #b3793f; --logo-mrna: #384a42;
+  --logo-b1: #c9663f; --logo-b2: #3f6f9c; --logo-b3: #5f9e46; --logo-b4: #e0a52e;
+
   --radius: 4px;
   --radius-sm: 3px;
   --shadow-color: #3a504a;
@@ -107,6 +111,9 @@
     --mini-bg: #1c322d; --mini-fg: #6bb3a5; --mini-border: #38544c; --mini-b: #8fd0c3;
     --warn-fg: #d9b877; --warn-bg: #2a2410; --warn-border: #5a4d20;
 
+    --logo-large: #45c2b0; --logo-small: #e0a35f; --logo-mrna: #aecabd;
+    --logo-b1: #f0956b; --logo-b2: #6fb0e0; --logo-b3: #8fce6a; --logo-b4: #f2ca5e;
+
     --shadow-color: #000000;
     --panel-shadow: rgba(0,0,0,.5);
     --shadow: 3px 3px 0 var(--panel-shadow);
@@ -136,9 +143,10 @@ header.top {
   display: flex; align-items: center; justify-content: space-between;
   padding: 28px 0 22px;
 }
-.brand { display: flex; align-items: center; gap: 14px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand .logo { flex: none; display: block; }
 .brand h1 {
-  font-family: var(--mono); font-size: 21px; font-weight: 700; margin: 0; letter-spacing: -0.01em;
+  font-family: var(--mono); font-size: 30px; font-weight: 700; margin: 0; letter-spacing: -0.01em;
   text-transform: uppercase;
   background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }

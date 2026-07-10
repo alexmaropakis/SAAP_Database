@@ -1,4 +1,4 @@
-# SAAP Database
+# SAAPedia
 
 An interactive local database for **single amino-acid polymorphisms / substituted peptides (SAAP)**
 from mass-spectrometry proteomics. Import a **CSV or Excel (.xlsx)** file, and the app de-duplicates

@@ -22,7 +22,7 @@ from .schemas import ExportRequest
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="SAAP Database", version="1.0.0")
+app = FastAPI(title="SAAPedia", version="1.0.0")
 
 
 @app.on_event("startup")
