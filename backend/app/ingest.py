@@ -185,6 +185,16 @@ def ingest_file(
                     source_accession=_clean_str(record.get("source_accession")),
                     source_gene=_clean_str(record.get("source_gene")),
                     ref_proteins=_clean_str(record.get("ref_proteins")),
+                    ensembl_gene=_clean_str(record.get("ensembl_gene")),
+                    ensembl_transcript=_clean_str(record.get("ensembl_transcript")),
+                    ensembl_protein=_clean_str(record.get("ensembl_protein")),
+                    protein_description=_clean_str(record.get("protein_description")),
+                    protein_length=_to_int(record.get("protein_length")),
+                    position_in_protein=_to_int(record.get("position_in_protein")),
+                    peptide_start=_to_int(record.get("peptide_start")),
+                    annotation_source=("file" if _clean_str(record.get("ensembl_gene"))
+                                       or _clean_str(record.get("position_in_protein"))
+                                       else None),
                     immunoglobulin=_to_bool(record.get("immunoglobulin")),
                     trypsin=_to_bool(record.get("trypsin")),
                     missed_cleavage=_to_bool(record.get("missed_cleavage")),
@@ -267,10 +277,17 @@ def upsert_dataset_dois(db: Session, dataset_doi_map: dict[str, str]) -> int:
 
 def _backfill_source(saap: SAAP, record: dict) -> None:
     """Fill in per-peptide attributes on an existing SAAP if previously blank."""
-    for attr in ("source_accession", "source_gene", "ref_proteins"):
+    for attr in ("source_accession", "source_gene", "ref_proteins",
+                 "ensembl_gene", "ensembl_transcript", "ensembl_protein",
+                 "protein_description"):
         if getattr(saap, attr) is None:
             val = _clean_str(record.get(attr))
             if val:
+                setattr(saap, attr, val)
+    for attr in ("protein_length", "position_in_protein", "peptide_start"):
+        if getattr(saap, attr) is None:
+            val = _to_int(record.get(attr))
+            if val is not None:
                 setattr(saap, attr, val)
     for attr in ("immunoglobulin", "trypsin", "missed_cleavage",
                  "aas_at_peptide_terminus", "greater_than_shared"):

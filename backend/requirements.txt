@@ -3,3 +3,6 @@ uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 python-multipart==0.0.20
 openpyxl==3.1.5
+# Ensembl / UniProt annotation (annotate.py): resolves Ensembl IDs and
+# substitution positions from the UniProt REST API.
+requests==2.32.3

@@ -52,6 +52,29 @@ const api = {
     }
     return r.blob();
   },
+  async exportPairs(payload) {
+    const r = await fetch("/api/export/pairs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      throw new Error(b.detail || "Export failed");
+    }
+    return r.blob();
+  },
+  async annotate(payload) {
+    const r = await fetch("/api/annotate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    const b = await r.json();
+    if (!r.ok) throw new Error(b.detail || "Annotation failed");
+    return b;
+  },
+  async annotateStatus() { return (await fetch("/api/annotate/status")).json(); },
   async exportCsv(payload) {
     const r = await fetch("/api/export/csv", {
       method: "POST",
@@ -259,6 +282,7 @@ function BrowseTab({ facets, datasetUrl, onDataChanged, showToast }) {
   const [selected, setSelected] = useState(() => new Set());
   const [detailId, setDetailId] = useState(null);
   const [showExport, setShowExport] = useState(false);
+  const [annotating, setAnnotating] = useState(false);
   const [colWidths, setColWidths] = useState({});
 
   const colW = (c) => colWidths[c.key] ?? c.w ?? DEFAULT_COL_W;
@@ -326,6 +350,25 @@ function BrowseTab({ facets, datasetUrl, onDataChanged, showToast }) {
   const activeFilters = Object.values(filters).filter((v) => v !== "").length;
   const ctx = { openDetail: setDetailId, datasetUrl };
 
+  const runAnnotate = async () => {
+    setAnnotating(true);
+    try {
+      const payload = selected.size > 0 ? { ids: Array.from(selected) } : {};
+      const res = await api.annotate(payload);
+      const bits = [`Annotated ${res.positioned}/${res.requested} with a position`];
+      if (res.not_found) bits.push(`${res.not_found} not found`);
+      if (res.unmatched_peptide) bits.push(`${res.unmatched_peptide} peptide unmatched`);
+      if (res.failed) bits.push(`${res.failed} failed`);
+      showToast(bits.join(" · "), Boolean(res.failed && !res.positioned));
+      if (res.errors && res.errors.length) console.warn("Annotation errors:", res.errors);
+      load();
+    } catch (e) {
+      showToast(e.message, true);
+    } finally {
+      setAnnotating(false);
+    }
+  };
+
   const pager = (
     <div className="pager">
       <label htmlFor="pagesize" className="pager-lbl">Rows</label>
@@ -373,6 +416,10 @@ function BrowseTab({ facets, datasetUrl, onDataChanged, showToast }) {
         <div className="btn-group">
           <button className="danger" disabled={selected.size === 0} onClick={deleteSelected}>Delete selected</button>
           <button className="ghost" disabled={selected.size === 0} onClick={() => setShowExport({ mode: "selected" })}>Export selected</button>
+          <button className="ghost" disabled={annotating || data.total === 0} onClick={runAnnotate}
+                  title="Resolve Ensembl IDs and substitution positions from UniProt">
+            {annotating ? "Annotating…" : selected.size > 0 ? `Annotate selected (${selected.size})` : "Annotate all"}
+          </button>
           <button disabled={data.total === 0} onClick={() => setShowExport({ mode: "filtered" })}>
             Export {activeFilters ? "filtered " : "all "}({data.total})
           </button>
@@ -607,13 +654,18 @@ function DetailDrawer({ id, datasetUrl, onClose }) {
 
 /* ----------------------------- Export modal ----------------------------- */
 const DEFAULT_TEMPLATE =
-  ">sp|{accession}-{mid}-{tok}|{gene}-mut {gene} mistranslated {mid} OS={species} OX={taxid} GN={gene} PE=1 SV=1";
+  ">sp|{accession}-{mid}-{tok}|{gene}-mut {gene} substituted {mid} OS={species} OX={taxid} GN={gene} PE=1 SV=1";
+
+const DEFAULT_BASE_TEMPLATE =
+  ">sp|{accession}-{bid}-{tok}|{gene}-base {gene} base peptide {bid} OS={species} OX={taxid} GN={gene} PE=1 SV=1";
 
 function ExportModal({ mode, selected, filters, total, onClose, showToast }) {
   const [format, setFormat] = useState("fasta");
   const [decoys, setDecoys] = useState(false);
+  const [basePeptides, setBasePeptides] = useState(false);
   const [refFile, setRefFile] = useState(null);
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [baseTemplate, setBaseTemplate] = useState(DEFAULT_BASE_TEMPLATE);
   const [busy, setBusy] = useState(false);
 
   const download = (blob, name) => {
@@ -633,10 +685,18 @@ function ExportModal({ mode, selected, filters, total, onClose, showToast }) {
       if (format === "csv") {
         download(await api.exportCsv(payload), `saap_export_${total}.csv`);
         showToast(`Exported ${total} SAAP to CSV`);
+      } else if (format === "pairs") {
+        download(await api.exportPairs(payload), `saap_bp_pairs_${total}.csv`);
+        showToast(`Exported ${total} SAAP-BP pairs`);
       } else {
-        const blob = await api.exportFasta({ ...payload, decoys, header_template: template }, refFile);
+        const blob = await api.exportFasta({
+          ...payload, decoys,
+          base_peptides: basePeptides,
+          header_template: template,
+          base_header_template: baseTemplate,
+        }, refFile);
         download(blob, `saap_variants_${total}.fasta`);
-        showToast(`Exported ${total} SAAP to FASTA`);
+        showToast(`Exported ${total} SAAP to FASTA${basePeptides ? " (with base peptides)" : ""}`);
       }
       onClose();
     } catch (e) { showToast(e.message, true); }
@@ -646,14 +706,22 @@ function ExportModal({ mode, selected, filters, total, onClose, showToast }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Export {total} SAAP as {format === "csv" ? ".CSV" : "FASTA"}</h3>
+        <h3>Export {total} SAAP as {format === "fasta" ? "FASTA" : format === "pairs" ? "SAAP-BP pairs .CSV" : ".CSV"}</h3>
         <div className="field">
           <label>Format</label>
           <div className="segmented">
             <button className={format === "fasta" ? "on" : ""} onClick={() => setFormat("fasta")}>FASTA</button>
             <button className={format === "csv" ? "on" : ""} onClick={() => setFormat("csv")}>CSV</button>
+            <button className={format === "pairs" ? "on" : ""} onClick={() => setFormat("pairs")}>SAAP-BP pairs</button>
           </div>
         </div>
+        {format === "pairs" ? (
+          <p className="hint">
+            One row per SAAP-BP pair: the swap in <code>BP&gt;SAAP</code> form plus Ensembl
+            gene/transcript/protein IDs, position in protein, gene, accession and
+            description. Run <strong>Annotate</strong> first to fill the Ensembl columns.
+          </p>
+        ) : null}
         {format === "fasta" ? (
           <React.Fragment>
             <div className="field">
@@ -668,15 +736,27 @@ function ExportModal({ mode, selected, filters, total, onClose, showToast }) {
               </label>
             </div>
             <div className="field">
-              <label>Header template</label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, textTransform: "none", cursor: "pointer" }}>
+                <input type="checkbox" checked={basePeptides} onChange={(e) => setBasePeptides(e.target.checked)} style={{ width: "auto" }} />
+                Also export base peptides (BP).
+              </label>
+            </div>
+            <div className="field">
+              <label>Header template (substituted peptide)</label>
               <textarea rows={3} value={template} onChange={(e) => setTemplate(e.target.value)} />
             </div>
+            {basePeptides ? (
+              <div className="field">
+                <label>Header template (base peptide)</label>
+                <textarea rows={3} value={baseTemplate} onChange={(e) => setBaseTemplate(e.target.value)} />
+              </div>
+            ) : null}
           </React.Fragment>
         ) : null}
         <div className="actions">
           <button className="ghost" onClick={onClose} disabled={busy}>Cancel</button>
           <button onClick={doExport} disabled={busy || total === 0}>
-            {busy ? "Generating…" : format === "csv" ? "Download .csv" : "Download .fasta"}
+            {busy ? "Generating…" : format === "fasta" ? "Download .fasta" : "Download .csv"}
           </button>
         </div>
       </div>

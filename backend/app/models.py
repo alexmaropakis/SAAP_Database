@@ -43,6 +43,23 @@ class SAAP(Base):
     source_accession: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # UniProt
     source_gene: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)        # Genes
     ref_proteins: Mapped[Optional[str]] = mapped_column(String, nullable=True)                   # RefProteins
+
+    # --- Ensembl / positional annotation -------------------------------------
+    # Populated either from columns in the imported file or by the annotation
+    # step (see annotate.py), which resolves them from the UniProt accession.
+    ensembl_gene: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)      # ENSG...
+    ensembl_transcript: Mapped[Optional[str]] = mapped_column(String, nullable=True)            # ENST...
+    ensembl_protein: Mapped[Optional[str]] = mapped_column(String, nullable=True)               # ENSP...
+    protein_description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    protein_length: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # 1-based index of the substituted residue within the full protein, and the
+    # 1-based offset of the peptide's first residue. Both derived by locating
+    # bp_seq in the canonical protein sequence.
+    position_in_protein: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    peptide_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Provenance for the annotation: e.g. "file", "uniprot", or "uniprot:unmatched".
+    annotation_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     immunoglobulin: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     trypsin: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     missed_cleavage: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)

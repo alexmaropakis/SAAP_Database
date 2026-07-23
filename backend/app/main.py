@@ -14,12 +14,13 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+from . import annotate as annotate_mod
 from . import crud
 from .database import get_db, init_db
-from .fasta import DEFAULT_HEADER, generate_fasta
+from .fasta import BASE_HEADER, DEFAULT_HEADER, generate_fasta
 from .ingest import ingest_file
 from .models import SAAP, Observation
-from .schemas import ExportRequest
+from .schemas import AnnotateRequest, ExportRequest
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -137,6 +138,14 @@ def saap_detail(saap_id: int, db: Session = Depends(get_db)):
             "missed_cleavage": saap.missed_cleavage,
             "aas_at_peptide_terminus": saap.aas_at_peptide_terminus,
             "greater_than_shared": saap.greater_than_shared,
+            "ensembl_gene": saap.ensembl_gene,
+            "ensembl_transcript": saap.ensembl_transcript,
+            "ensembl_protein": saap.ensembl_protein,
+            "protein_description": saap.protein_description,
+            "protein_length": saap.protein_length,
+            "position_in_protein": saap.position_in_protein,
+            "peptide_start": saap.peptide_start,
+            "annotation_source": saap.annotation_source,
         },
         "observations": [_obs_dict(o) for o in observations],
     }
@@ -200,11 +209,18 @@ async def export_fasta(
         token=default_token,
         token_by_id=token_map,
         include_decoys=bool(req.decoys),
+        include_base_peptides=bool(req.base_peptides),
         reference_fasta=ref_text,
         line_width=req.line_width or 60,
         header_template=req.header_template or DEFAULT_HEADER,
+        base_header_template=req.base_header_template or BASE_HEADER,
     )
-    filename = f"saap_export_{len(saaps)}{'_withref' if ref_text else ''}{'_decoys' if req.decoys else ''}.fasta"
+    filename = (
+        f"saap_export_{len(saaps)}"
+        f"{'_withbp' if req.base_peptides else ''}"
+        f"{'_withref' if ref_text else ''}"
+        f"{'_decoys' if req.decoys else ''}.fasta"
+    )
     return StreamingResponse(
         io.BytesIO(fasta.encode("utf-8")),
         media_type="text/x-fasta",
@@ -257,6 +273,69 @@ async def export_csv(req: ExportRequest, db: Session = Depends(get_db)):
     )
 
 
+# --------------------- SAAP–BP pairs CSV (Ensembl view) ---------------------
+# One row per SAAP-BP pair: the swap in BP>SAAP form plus Ensembl/protein
+# context. Deliberately narrow — this is the pair-level companion to the full
+# rollup CSV above.
+_PAIRS_COLUMNS = [
+    ("saap", "SAAP"),
+    ("bp", "BP"),
+    ("substitution", "Substitution"),        # e.g. "V to P"
+    ("swap", "Swap (BP>SAAP)"),              # e.g. "V>P"
+    ("position_in_protein", "Position in protein"),
+    ("peptide_start", "Peptide start"),
+    ("ensembl_gene", "Ensembl gene ID"),
+    ("ensembl_transcript", "Ensembl transcript ID"),
+    ("ensembl_protein", "Ensembl protein ID"),
+    ("gene", "Gene"),
+    ("protein_accession", "Protein accession"),
+    ("protein_description", "Protein description"),
+    ("protein_length", "Protein length"),
+    ("annotation_source", "Annotation source"),
+]
+
+
+@app.post("/api/export/pairs")
+async def export_pairs_csv(req: ExportRequest, db: Session = Depends(get_db)):
+    """Export SAAP-BP pairs with the substitution and Ensembl annotation."""
+    filters = _clean_filters(req.filters) if req.filters else None
+    rows = crud.get_pairs_for_export(db, req.ids, filters)
+    if not rows:
+        raise HTTPException(400, "Nothing to export — no SAAP selected or matching the filter.")
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([label for _, label in _PAIRS_COLUMNS])
+    for r in rows:
+        writer.writerow(["" if r.get(k) is None else r.get(k) for k, _ in _PAIRS_COLUMNS])
+
+    filename = f"saap_bp_pairs_{len(rows)}.csv"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------- API: annotation ------------------------------
+@app.post("/api/annotate")
+def annotate(req: AnnotateRequest, db: Session = Depends(get_db)):
+    """Resolve Ensembl IDs, protein description/length and the substitution
+    position from UniProt. Requires outbound network access; failures are
+    reported in the response rather than raised."""
+    result = annotate_mod.annotate_saaps(
+        db, ids=req.ids, only_missing=req.only_missing,
+        overwrite=req.overwrite, limit=req.limit,
+    )
+    return result.as_dict()
+
+
+@app.get("/api/annotate/status")
+def annotate_status(db: Session = Depends(get_db)):
+    """How much of the DB currently carries Ensembl / position annotation."""
+    return crud.annotation_status(db)
+
+
 _ALLOWED_FILTERS = {"q", "dataset", "digest", "species", "acquisition_type", "aa_sub",
                     "immunoglobulin", "trypsin", "missed_cleavage",
                     "aas_at_peptide_terminus", "greater_than_shared",
@@ -282,12 +361,43 @@ def _clean_filters(filters: dict) -> dict:
     return out
 
 
+# Bumped when backend behaviour changes, so you can confirm which build is
+# actually running (GET /api/health) without inspecting the UI.
+BUILD = "2026.07-saap-ensembl"
+
+
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "build": BUILD,
+        "features": ["substituted-terminology", "base-peptide-export",
+                     "saap-bp-pairs-csv", "ensembl-annotation"],
+    }
 
 
 # ------------------------- static single-page app --------------------------
 # Mounted last so /api/* routes take precedence.
+class _NoCacheStaticFiles(StaticFiles):
+    """Serve the SPA with caching disabled.
+
+    app.js is transpiled in-browser by Babel and loaded without a cache-busting
+    query string, so a browser that caches it will keep running an old copy
+    after the app is updated — the classic "I updated the code but nothing
+    changed" symptom. These headers force a revalidation on every load. The
+    files are tiny and served from localhost, so there's no practical cost.
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False  # never answer 304 for the SPA
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
 if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    app.mount("/", _NoCacheStaticFiles(directory=str(STATIC_DIR), html=True), name="static")

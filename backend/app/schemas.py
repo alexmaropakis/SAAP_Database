@@ -14,5 +14,15 @@ class ExportRequest(BaseModel):
     species: str = ""          # fallback only; species is taken from the data
     token: str = ""            # pool/plex label used in the header accession
     decoys: bool = False       # append rev_ reversed-sequence decoys
+    base_peptides: bool = False  # also emit each SAAP's base peptide (BP)
     line_width: int = 60
     header_template: Optional[str] = None
+    base_header_template: Optional[str] = None
+
+
+class AnnotateRequest(BaseModel):
+    """Resolve Ensembl IDs and substitution positions from UniProt."""
+    ids: Optional[list[int]] = None   # restrict to these SAAP (default: all)
+    only_missing: bool = True         # skip rows already annotated
+    overwrite: bool = False           # replace existing values
+    limit: Optional[int] = None       # cap rows processed (trial runs)

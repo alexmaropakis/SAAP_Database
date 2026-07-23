@@ -180,6 +180,66 @@ def get_rollups_for_export(db: Session, ids: list[int] | None, filters: dict | N
     return [_row_to_dict(row) for row in db.execute(stmt).all()]
 
 
+def _swap_notation(aa_sub: str | None, bp_seq: str | None, mtp_seq: str | None) -> str:
+    """The substitution in BP>SAAP form, e.g. 'V>P'.
+
+    Prefers the AAS column; falls back to comparing the base and substituted
+    peptides when the two differ at exactly one residue.
+    """
+    from .annotate import parse_substitution, substitution_offset
+
+    frm, to = parse_substitution(aa_sub)
+    if frm and to:
+        return f"{frm}>{to}"
+    offset = substitution_offset(bp_seq, mtp_seq)
+    if offset is not None:
+        return f"{bp_seq[offset]}>{mtp_seq[offset]}"
+    return ""
+
+
+def _pair_row(saap: SAAP) -> dict:
+    return {
+        "saap": saap.mtp_seq,
+        "bp": saap.bp_seq,
+        "substitution": saap.aa_sub,
+        "swap": _swap_notation(saap.aa_sub, saap.bp_seq, saap.mtp_seq),
+        "position_in_protein": saap.position_in_protein,
+        "peptide_start": saap.peptide_start,
+        "ensembl_gene": saap.ensembl_gene,
+        "ensembl_transcript": saap.ensembl_transcript,
+        "ensembl_protein": saap.ensembl_protein,
+        "gene": saap.source_gene,
+        "protein_accession": saap.source_accession,
+        "protein_description": saap.protein_description or saap.ref_proteins,
+        "protein_length": saap.protein_length,
+        "annotation_source": saap.annotation_source,
+    }
+
+
+def get_pairs_for_export(db: Session, ids: list[int] | None, filters: dict | None):
+    """SAAP-BP pair rows (one per SAAP) for the pairs CSV export."""
+    saaps = get_saap_for_export(db, ids, filters)
+    return [_pair_row(s) for s in saaps]
+
+
+def annotation_status(db: Session) -> dict:
+    """Counts of how many SAAP carry Ensembl IDs / positions."""
+    total = db.scalar(select(func.count(SAAP.id))) or 0
+    with_ensembl = db.scalar(
+        select(func.count(SAAP.id)).where(SAAP.ensembl_gene.is_not(None),
+                                          SAAP.ensembl_gene != "")
+    ) or 0
+    with_position = db.scalar(
+        select(func.count(SAAP.id)).where(SAAP.position_in_protein.is_not(None))
+    ) or 0
+    return {
+        "n_saap": total,
+        "n_with_ensembl": with_ensembl,
+        "n_with_position": with_position,
+        "n_unannotated": total - with_ensembl,
+    }
+
+
 def species_by_saap(db: Session, ids: list[int]) -> dict[int, str]:
     """Map saap_id -> species string (from the data). Multiple species for one
     SAAP are joined with '/'."""

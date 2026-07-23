@@ -1,20 +1,37 @@
-"""Generate FragPipe/Philosopher-safe mock-UniProt FASTA for each SAAP's variant
-(substituted / mistranslated) peptide.
+"""Generate FragPipe/Philosopher-safe mock-UniProt FASTA for each SAAP's
+substituted peptide.
 
 Header format (matches the lab's build pipeline):
 
-    >sp|{accession}-MTP{id}-{token}|{gene}-mut {gene} substituted SAAP{id} \
+    >sp|{accession}-SAAP{id}-{token}|{gene}-mut {gene} substituted SAAP{id} \
        OS={Species} OX={taxid} GN={gene} PE=1 SV=1
 
 The accession component is made unique per entry by the internal SAAP id (SAAP{id}),
 and `token` is the pool/plex label chosen at export time.
+
+Terminology: these peptides are always described as "substituted" — never
+"mistranslated". Substitution is the observation; mistranslation is only one of
+several possible mechanisms behind it, so the neutral term is used throughout
+(headers, templates, and the base-peptide entries below).
+
+Base peptides can optionally be emitted alongside the substituted peptides
+(`include_base_peptides`), using BASE_HEADER so the two are easy to tell apart
+downstream.
 """
 from __future__ import annotations
 import re
 from .models import SAAP
 
 DEFAULT_HEADER = (
-    ">sp|{accession}-{mid}|{gene}-mut {gene} substituted {mid} "
+    ">sp|{accession}-{mid}-{tok}|{gene}-mut {gene} substituted {mid} "
+    "OS={species} OX={taxid} GN={gene} PE=1 SV=1"
+)
+
+# Header for the unmodified base peptide (BP) of a SAAP. Kept parallel to
+# DEFAULT_HEADER but marked "base" and given a BP{id} identifier so substituted
+# and base entries never collide in a search database.
+BASE_HEADER = (
+    ">sp|{accession}-{bid}-{tok}|{gene}-base {gene} base peptide {bid} "
     "OS={species} OX={taxid} GN={gene} PE=1 SV=1"
 )
 
@@ -79,6 +96,7 @@ def _fields(saap: SAAP, species: str, token: str, seq_no: int) -> dict:
     return {
         "id": seq_no,
         "mid": mid,
+        "bid": f"BP{seq_no}",          # identifier for the base-peptide entry
         "accession": accession,
         "tok": token,
         "gene": gene,
@@ -90,6 +108,13 @@ def _fields(saap: SAAP, species: str, token: str, seq_no: int) -> dict:
         "bp_seq": saap.bp_seq or "-",
         "mtp_seq": saap.mtp_seq,
         "protein": first_value(saap.ref_proteins),
+        # Ensembl / positional annotation (blank when not yet annotated), so
+        # custom header templates can reference them.
+        "ensembl_gene": saap.ensembl_gene or "",
+        "ensembl_transcript": saap.ensembl_transcript or "",
+        "ensembl_protein": saap.ensembl_protein or "",
+        "position": saap.position_in_protein if saap.position_in_protein is not None else "",
+        "protein_description": saap.protein_description or "",
     }
 
 
@@ -124,30 +149,51 @@ def generate_fasta(
     token: str = "",
     token_by_id: dict[int, str] | None = None,
     include_decoys: bool = False,
+    include_base_peptides: bool = False,
     reference_fasta: str | None = None,
     line_width: int = DEFAULT_LINE_WIDTH,
     header_template: str = DEFAULT_HEADER,
+    base_header_template: str = BASE_HEADER,
 ) -> str:
+    """Build the FASTA text.
+
+    include_base_peptides — also emit each SAAP's unmodified base peptide (BP)
+    as its own entry, immediately after the substituted peptide it belongs to.
+    SAAPs with no recorded base peptide, or whose base peptide is identical to
+    the substituted one, are skipped. Base entries are decoyed alongside the
+    rest when include_decoys is set.
+    """
     species_by_id = species_by_id or {}
     token_by_id = token_by_id or {}
 
-    # Forward (target) entries: the SAAP variant peptides. The MTP number is a
+    def _render(template: str, fields: dict, fallback: str) -> str:
+        try:
+            header = template.format(**fields)
+        except (KeyError, IndexError, ValueError):
+            # Bad custom template -> fall back to the default so export never fails.
+            header = fallback.format(**fields)
+        return header if header.startswith(">") else ">" + header
+
+    # Forward (target) entries: the substituted peptides. The SAAP number is a
     # 1-based export-order index (not the DB id), so it stays contiguous and its
     # max equals the entry count. Note: a given SAAP's number can therefore differ
     # between exports as the selected set changes.
     entries: list[tuple[str, str]] = []
+    seen_base: set[str] = set()
     for seq_no, saap in enumerate(saaps, start=1):
         species = species_by_id.get(saap.id) or default_species
         tok = sanitize_token(token_by_id.get(saap.id) or token)
         fields = _fields(saap, species, tok, seq_no)
-        try:
-            header = header_template.format(**fields)
-        except (KeyError, IndexError, ValueError):
-            # Bad custom template -> fall back to the default so export never fails.
-            header = DEFAULT_HEADER.format(**fields)
-        if not header.startswith(">"):
-            header = ">" + header
-        entries.append((header, saap.mtp_seq))
+        entries.append((_render(header_template, fields, DEFAULT_HEADER), saap.mtp_seq))
+
+        if include_base_peptides:
+            bp = (saap.bp_seq or "").strip()
+            # Skip when absent, unchanged, or already emitted: several SAAPs can
+            # share one base peptide, and duplicate FASTA entries break some
+            # search engines' protein inference.
+            if bp and bp != saap.mtp_seq and bp not in seen_base:
+                seen_base.add(bp)
+                entries.append((_render(base_header_template, fields, BASE_HEADER), bp))
 
     # ... then the reference proteome (if supplied), passed through unchanged.
     if reference_fasta:
